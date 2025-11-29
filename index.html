@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Smart Breaker MQTT Dashboard</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: #eee;
+      margin: 0;
+      padding: 0;
+      text-align: center;
+    }
+    h1 {
+      margin-top: 20px;
+    }
+    .container {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 10px;
+    }
+    .card {
+      background: #222;
+      border-radius: 10px;
+      padding: 15px;
+      margin: 10px;
+      min-width: 230px;
+      box-shadow: 0 0 8px #000;
+    }
+    .label {
+      font-size: 13px;
+      color: #aaa;
+    }
+    .value {
+      font-size: 20px;
+      margin: 5px 0;
+    }
+    button {
+      padding: 6px 14px;
+      margin: 3px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .on {
+      background: #2e7d32;
+      color: #fff;
+    }
+    .off {
+      background: #c62828;
+      color: #fff;
+    }
+    #statusBar {
+      font-size: 14px;
+      margin-bottom: 10px;
+      color: #ccc;
+    }
+    canvas {
+      background: #111;
+      border-radius: 10px;
+      box-shadow: 0 0 8px #000;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Smart Circuit Breaker Dashboard</h1>
+  <div id="statusBar">Connecting to MQTT...</div>
+
+  <div class="container">
+    <div class="card">
+      <h3>Simulated Current</h3>
+      <div class="label">From Potentiometer</div>
+      <div class="value" id="simCurrent">-- mA</div>
+      <div class="label">Raw ADC</div>
+      <div class="value" id="potRaw">--</div>
+    </div>
+
+    <div class="card">
+      <h3>Sensor A (0x40)</h3>
+      <div class="label">Voltage</div>
+      <div class="value" id="voltA">-- V</div>
+      <div class="label">Current</div>
+      <div class="value" id="currA">-- mA</div>
+    </div>
+
+    <div class="card">
+      <h3>Sensor B (0x44)</h3>
+      <div class="label">Voltage</div>
+      <div class="value" id="voltB">-- V</div>
+      <div class="label">Current</div>
+      <div class="value" id="currB">-- mA</div>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="card">
+      <h3>Relay 1</h3>
+      <div class="value" id="r1state">--</div>
+      <button class="on"  onclick="setRelay(1, 'ON')">ON</button>
+      <button class="off" onclick="setRelay(1, 'OFF')">OFF</button>
+    </div>
+    <div class="card">
+      <h3>Relay 2</h3>
+      <div class="value" id="r2state">--</div>
+      <button class="on"  onclick="setRelay(2, 'ON')">ON</button>
+      <button class="off" onclick="setRelay(2, 'OFF')">OFF</button>
+    </div>
+    <div class="card">
+      <h3>Relay 3</h3>
+      <div class="value" id="r3state">--</div>
+      <button class="on"  onclick="setRelay(3, 'ON')">ON</button>
+      <button class="off" onclick="setRelay(3, 'OFF')">OFF</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="card" style="width:90%;">
+      <h3>Simulated Current Trend</h3>
+      <canvas id="simChart" height="100"></canvas>
+    </div>
+  </div>
+
+  <!-- Paho MQTT and Chart.js from CDNs -->
+  <script src="https://unpkg.com/paho-mqtt@1.1.0/paho-mqtt-min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+    // ===== MQTT CONFIG =====
+    const mqttHost = "broker.hivemq.com";
+    const mqttPort = 8884; // WebSocket port
+
+    // Create a client ID (random-ish)
+    const clientId = "webDash_" + Math.floor(Math.random() * 10000);
+
+    const client = new Paho.Client(mqttHost, mqttPort, "/mqtt", clientId);
+
+    client.onConnectionLost = function (responseObject) {
+      document.getElementById("statusBar").innerText = "MQTT connection lost. Reconnecting...";
+      setTimeout(connectMQTT, 2000);
+    };
+
+    client.onMessageArrived = function (message) {
+      const topic = message.destinationName;
+      const payload = message.payloadString;
+
+      if (topic === "home/breaker/potRaw") {
+        document.getElementById("potRaw").innerText = payload;
+      } else if (topic === "home/breaker/simCurrent") {
+        document.getElementById("simCurrent").innerText = payload + " mA";
+        addSimData(parseFloat(payload));
+      } else if (topic === "home/breaker/realCurrentA") {
+        document.getElementById("currA").innerText = payload + " mA";
+      } else if (topic === "home/breaker/realCurrentB") {
+        document.getElementById("currB").innerText = payload + " mA";
+      } else if (topic === "home/breaker/realVoltageA") {
+        document.getElementById("voltA").innerText = payload + " V";
+      } else if (topic === "home/breaker/realVoltageB") {
+        document.getElementById("voltB").innerText = payload + " V";
+      } else if (topic === "home/breaker/relay1/state") {
+        document.getElementById("r1state").innerText = payload;
+      } else if (topic === "home/breaker/relay2/state") {
+        document.getElementById("r2state").innerText = payload;
+      } else if (topic === "home/breaker/relay3/state") {
+        document.getElementById("r3state").innerText = payload;
+      }
+    };
+
+    function connectMQTT() {
+      document.getElementById("statusBar").innerText = "Connecting to MQTT broker...";
+      client.connect({
+        onSuccess: function () {
+          document.getElementById("statusBar").innerText = "Connected to MQTT as " + clientId;
+          client.subscribe("home/breaker/#");
+        },
+        onFailure: function (err) {
+          document.getElementById("statusBar").innerText =
+            "Failed to connect: " + err.errorMessage + " (retrying)";
+          setTimeout(connectMQTT, 2000);
+        },
+        useSSL: true
+      });
+    }
+
+    function setRelay(ch, state) {
+      const topic = "home/breaker/cmd/relay" + ch;
+      const msg = new Paho.Message(state);
+      msg.destinationName = topic;
+      client.send(msg);
+    }
+
+    // ===== Chart.js for simCurrent trend =====
+    const ctx = document.getElementById("simChart").getContext("2d");
+    const simData = [];
+    const simLabels = [];
+
+    const simChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: simLabels,
+        datasets: [{
+          label: "Simulated Current (mA)",
+          data: simData,
+          borderWidth: 2,
+          fill: false,
+          tension: 0.1
+        }]
+      },
+      options: {
+        scales: {
+          x: {
+            display: false
+          },
+          y: {
+            beginAtZero: true
+          }
+        },
+        plugins: {
+          legend: {
+            labels: { color: "#eee" }
+          }
+        }
+      }
+    });
+
+    function addSimData(value) {
+      const maxPoints = 50;
+      simData.push(value);
+      simLabels.push("");
+
+      if (simData.length > maxPoints) {
+        simData.shift();
+        simLabels.shift();
+      }
+      simChart.update();
+    }
+
+    // Start
+    connectMQTT();
+  </script>
+</body>
+</html>
