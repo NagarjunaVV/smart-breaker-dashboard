@@ -64,11 +64,50 @@
       box-shadow: 0 0 8px #000;
       margin-top: 10px;
     }
+    /* Lock screen overlay */
+    #lockScreen {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.95);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 10000;
+    }
+    #lockScreen h2 {
+      margin-bottom: 10px;
+    }
+    #pwdInput {
+      padding: 10px;
+      font-size: 18px;
+      border-radius: 8px;
+      border: none;
+      outline: none;
+    }
+    #lockScreen button {
+      margin-top: 10px;
+      padding: 8px 20px;
+      font-size: 16px;
+      border-radius: 8px;
+    }
+    #wrongMsg {
+      margin-top: 8px;
+      color: #c40000;
+    }
   </style>
 </head>
 <body>
+  <!-- Password overlay -->
+  <div id="lockScreen">
+    <h2>Enter Access Password</h2>
+    <input type="password" id="pwdInput" placeholder="Password" />
+    <button onclick="checkPassword()">Submit</button>
+    <div id="wrongMsg"></div>
+  </div>
+
   <h1>Smart Circuit Breaker Dashboard</h1>
-  <div id="statusBar">Connecting to MQTT...</div>
+  <div id="statusBar">Please enter password to connect…</div>
 
   <div class="container">
     <div class="card">
@@ -100,20 +139,20 @@
     <div class="card">
       <h3>Relay 1</h3>
       <div class="value" id="r1state">--</div>
-      <button class="on"  onclick="setRelay(1, 'ON')">ON</button>
-      <button class="off" onclick="setRelay(1, 'OFF')">OFF</button>
+      <button class="on"  onclick="setRelay(1, 'ON')"  disabled>ON</button>
+      <button class="off" onclick="setRelay(1, 'OFF')" disabled>OFF</button>
     </div>
     <div class="card">
       <h3>Relay 2</h3>
       <div class="value" id="r2state">--</div>
-      <button class="on"  onclick="setRelay(2, 'ON')">ON</button>
-      <button class="off" onclick="setRelay(2, 'OFF')">OFF</button>
+      <button class="on"  onclick="setRelay(2, 'ON')"  disabled>ON</button>
+      <button class="off" onclick="setRelay(2, 'OFF')" disabled>OFF</button>
     </div>
     <div class="card">
       <h3>Relay 3</h3>
       <div class="value" id="r3state">--</div>
-      <button class="on"  onclick="setRelay(3, 'ON')">ON</button>
-      <button class="off" onclick="setRelay(3, 'OFF')">OFF</button>
+      <button class="on"  onclick="setRelay(3, 'ON')"  disabled>ON</button>
+      <button class="off" onclick="setRelay(3, 'OFF')" disabled>OFF</button>
     </div>
   </div>
 
@@ -129,9 +168,43 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <script>
+    // ===== PASSWORD GATE =====
+    const CORRECT_PASSWORD = "rvu123";   // <<< change if you want
+    let unlocked = false;
+
+    function enableButtons(enabled) {
+      document.querySelectorAll("button").forEach(btn => {
+        if (btn.closest("#lockScreen")) return; // don't touch lock screen buttons
+        btn.disabled = !enabled;
+      });
+    }
+
+    function checkPassword() {
+      const typed = document.getElementById("pwdInput").value.trim();
+      if (typed === CORRECT_PASSWORD) {
+        unlocked = true;
+        document.getElementById("lockScreen").style.display = "none";
+        document.getElementById("statusBar").innerText = "Connecting to MQTT broker...";
+        enableButtons(true);
+        connectMQTT();
+      } else {
+        document.getElementById("wrongMsg").innerText = "❗ Incorrect password";
+      }
+    }
+
+    // Allow Enter key to submit password
+    document.addEventListener("keydown", function (e) {
+      if (!unlocked && e.key === "Enter") {
+        checkPassword();
+      }
+    });
+
+    // Disable control buttons until unlocked
+    enableButtons(false);
+
     // ===== MQTT CONFIG =====
     const mqttHost = "broker.hivemq.com";
-    const mqttPort = 8884; // WebSocket port
+    const mqttPort = 8884; // Secure WebSocket port
 
     // Create a client ID (random-ish)
     const clientId = "webDash_" + Math.floor(Math.random() * 10000);
@@ -139,7 +212,9 @@
     const client = new Paho.Client(mqttHost, mqttPort, "/mqtt", clientId);
 
     client.onConnectionLost = function (responseObject) {
-      document.getElementById("statusBar").innerText = "MQTT connection lost. Reconnecting...";
+      console.error("MQTT connection lost:", responseObject);
+      document.getElementById("statusBar").innerText =
+        "MQTT connection lost. Reconnecting...";
       setTimeout(connectMQTT, 2000);
     };
 
@@ -170,13 +245,24 @@
     };
 
     function connectMQTT() {
+      if (!unlocked) {
+        console.warn("Page locked — not connecting to MQTT");
+        return;
+      }
+
+      console.log("Connecting to MQTT:", mqttHost, mqttPort, "clientId:", clientId);
       document.getElementById("statusBar").innerText = "Connecting to MQTT broker...";
+
       client.connect({
         onSuccess: function () {
-          document.getElementById("statusBar").innerText = "Connected to MQTT as " + clientId;
+          console.log("MQTT connected");
+          document.getElementById("statusBar").innerText =
+            "Connected to MQTT as " + clientId;
           client.subscribe("home/breaker/#");
+          console.log("Subscribed to home/breaker/#");
         },
         onFailure: function (err) {
+          console.error("MQTT connection failed:", err);
           document.getElementById("statusBar").innerText =
             "Failed to connect: " + err.errorMessage + " (retrying)";
           setTimeout(connectMQTT, 2000);
@@ -186,6 +272,7 @@
     }
 
     function setRelay(ch, state) {
+      if (!unlocked) return; // extra safety
       const topic = "home/breaker/cmd/relay" + ch;
       const msg = new Paho.Message(state);
       msg.destinationName = topic;
@@ -238,8 +325,8 @@
       simChart.update();
     }
 
-    // Start
-    connectMQTT();
+    // NOTE: we do NOT call connectMQTT() here.
+    // It is only called after correct password via checkPassword().
   </script>
 </body>
 </html>
